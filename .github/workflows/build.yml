@@ -1,0 +1,177 @@
+name: build
+
+# Builds this driver against the DavidLDawes/core fork - the mirror image of the
+# workflow in that repo, which builds core against this driver. Between the two,
+# a change to either half of the firmware is compiled with the other half before
+# it can land on main.
+#
+# The matrix exists because grblHAL is heavily conditionally compiled. A change
+# that builds for a 3-axis RP2350 target can easily break RP2040, a wider axis
+# count, or a lower compatibility level.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARM_TOOLCHAIN_VERSION: 14.2.rel1
+  PICO_SDK_VERSION: 2.1.1
+  CORE_REPO: https://github.com/DavidLDawes/core.git
+  CORE_REF: main
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: pico2-generic-3axis
+            pico_board: pico2
+            defines: ""
+          - name: pico-generic-3axis
+            pico_board: pico
+            defines: ""
+          - name: pico2-generic-4axis
+            pico_board: pico2
+            defines: "BOARD_GENERIC_4AXIS"
+          - name: pico2-generic-8axis
+            pico_board: pico2
+            defines: "BOARD_GENERIC_8AXIS"
+          - name: pico2-compat-level-1
+            pico_board: pico2
+            defines: "COMPATIBILITY_LEVEL=1"
+          - name: pico2-compat-level-2
+            pico_board: pico2
+            defines: "COMPATIBILITY_LEVEL=2"
+
+    steps:
+      - name: Check out driver
+        uses: actions/checkout@v4
+        with:
+          path: driver
+          submodules: recursive
+
+      - name: Cache Arm GNU toolchain
+        id: cache-arm
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain
+          key: arm-gnu-${{ env.ARM_TOOLCHAIN_VERSION }}
+
+      - name: Install Arm GNU toolchain
+        if: steps.cache-arm.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/toolchain && cd ~/toolchain
+          curl -fsSL -o arm.tar.xz \
+            "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_TOOLCHAIN_VERSION}/binrel/arm-gnu-toolchain-${ARM_TOOLCHAIN_VERSION}-x86_64-arm-none-eabi.tar.xz"
+          tar xf arm.tar.xz && rm arm.tar.xz
+          mv arm-gnu-toolchain-* arm-none-eabi
+
+      - name: Add toolchain to PATH
+        run: echo "$HOME/toolchain/arm-none-eabi/bin" >> "$GITHUB_PATH"
+
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Cache Pico SDK
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/pico-sdk
+          key: pico-sdk-${{ env.PICO_SDK_VERSION }}-patched
+
+      - name: Check out Pico SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          git clone -b "$PICO_SDK_VERSION" --depth 1 --recursive --shallow-submodules \
+            https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
+
+      # Pico SDK 2.1.1's host-side pioasm relies on <cstdint> being pulled in
+      # transitively, which GCC 13+ no longer does. Without this the build dies
+      # with "'uint8_t' does not name a type" followed by a cascade of bogus
+      # "no member named 'used_gpio_ranges'" errors. Fixed at the common base
+      # header so one line covers every consumer. Idempotent.
+      - name: Patch Pico SDK pioasm for GCC 13+
+        run: |
+          hdr=~/pico-sdk/tools/pioasm/pio_enums.h
+          if ! grep -q '#include <cstdint>' "$hdr"; then
+            sed -i 's|^#define _PIO_ENUMS_H$|#define _PIO_ENUMS_H\n\n#include <cstdint>|' "$hdr"
+            grep -q '#include <cstdint>' "$hdr" || { echo "::error::pioasm patch failed to apply"; exit 1; }
+            echo "patched $hdr"
+          else
+            echo "already patched"
+          fi
+
+      # The `grbl` submodule pins an upstream grblHAL/core commit. Replace it
+      # with the head of our own core fork, so the two halves are tested as the
+      # pair we actually ship.
+      - name: Substitute the core fork for the pinned submodule
+        run: |
+          git clone --depth 1 -b "$CORE_REF" "$CORE_REPO" core
+          rm -rf driver/grbl
+          cp -a core driver/grbl
+          test -f driver/grbl/grbllib.c || { echo "::error::core not wired in correctly"; exit 1; }
+          echo "core at $(git -C core rev-parse --short HEAD)"
+
+      - name: Configure
+        env:
+          PICO_SDK_PATH: /home/runner/pico-sdk
+        run: |
+          if [ -n "${{ matrix.defines }}" ]; then
+            echo 'add_compile_definitions(${{ matrix.defines }})' > inject.cmake
+          else
+            echo '# no extra defines' > inject.cmake
+          fi
+          # PICO_NO_COPRO_DIS: picotool 2.3.2's "coprodis" subcommand segfaults.
+          # It only annotates the human-readable .dis listing and has no effect
+          # on the firmware image.
+          cmake -G Ninja -S driver -B build \
+            -DPICO_BOARD=${{ matrix.pico_board }} \
+            -DPICO_NO_COPRO_DIS=1 \
+            -DCMAKE_PROJECT_grblHAL_INCLUDE="$PWD/inject.cmake"
+
+      - name: Build
+        env:
+          PICO_SDK_PATH: /home/runner/pico-sdk
+        run: cmake --build build
+
+      - name: Verify firmware image
+        run: |
+          uf2=build/grblHAL.uf2
+          elf=build/grblHAL.elf
+          test -f "$uf2" || { echo "::error::no uf2 produced"; exit 1; }
+          test -f "$elf" || { echo "::error::no elf produced"; exit 1; }
+
+          # UF2 is a stream of 512-byte blocks, each starting with magic
+          # 0x0A324655 ("UF2\n"). Check the container is well formed.
+          size=$(stat -c%s "$uf2")
+          if [ $((size % 512)) -ne 0 ]; then
+            echo "::error::uf2 size $size is not a multiple of 512"; exit 1
+          fi
+          magic=$(head -c4 "$uf2" | xxd -p)
+          if [ "$magic" != "5546320a" ]; then
+            echo "::error::bad uf2 magic: $magic"; exit 1
+          fi
+          echo "uf2 OK: $size bytes, $((size / 512)) blocks"
+
+          echo "--- firmware size ---"
+          arm-none-eabi-size "$elf"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: grblHAL-${{ matrix.name }}
+          path: |
+            build/grblHAL.uf2
+            build/grblHAL.elf
+          if-no-files-found: error
+          retention-days: 14
