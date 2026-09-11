@@ -1807,9 +1807,11 @@ static spindle_data_t *spindleGetData (spindle_data_request_t request)
 
 //    while(spindle_encoder.spin_lock);
 
+    uint32_t primask = __get_PRIMASK();
+
     __disable_irq();
     memcpy(&encoder, &spindle_encoder.counter, sizeof(spindle_encoder_counter_t));
-    __enable_irq();
+    __set_PRIMASK(primask);
 
     uint32_t tval = (uint32_t)(get_absolute_time() - encoder_started);
     uint16_t cval = pwm_get_counter(encoder_pwm);
@@ -1972,30 +1974,70 @@ void spi_reset_out (bool on)
 
 #endif
 
+/* Critical section handling.
+
+   These must save and restore the interrupt mask rather than unconditionally
+   enabling it. The core calls hal.irq_disable()/hal.irq_enable() and the atomic
+   helpers below from interrupt context - the realtime command intake in
+   protocol_enqueue_realtime_command(), the control and limit interrupt handlers,
+   and task_add_delayed() from gpio_int_handler() - so a bare __enable_irq() here
+   would clear the mask of whatever critical section the caller was inside, with
+   no diagnostic.
+
+   irqDisable()/irqEnable() additionally nest, via a depth counter: only the
+   outermost pair touches PRIMASK. The counter is only ever modified with
+   interrupts already disabled, so it needs no protection of its own. Calls must
+   be balanced.
+*/
+
+static uint32_t irq_nesting = 0, irq_primask = 0;
+
+static void irqDisable (void)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+
+    if(irq_nesting++ == 0)
+        irq_primask = primask;
+}
+
+static void irqEnable (void)
+{
+    if(irq_nesting && --irq_nesting == 0)
+        __set_PRIMASK(irq_primask);
+}
+
 // Helper functions for setting/clearing/inverting individual bits atomically (uninterruptable)
 static void bitsSetAtomic (volatile uint_fast16_t *ptr, uint_fast16_t bits)
 {
+    uint32_t primask = __get_PRIMASK();
+
     __disable_irq();
     *ptr |= bits;
-    __enable_irq();
+    __set_PRIMASK(primask);
 }
 
 static uint_fast16_t bitsClearAtomic (volatile uint_fast16_t *ptr, uint_fast16_t bits)
 {
+    uint32_t primask = __get_PRIMASK();
+
     __disable_irq();
     uint_fast16_t prev = *ptr;
     *ptr &= ~bits;
-    __enable_irq();
+    __set_PRIMASK(primask);
 
     return prev;
 }
 
 static uint_fast16_t valueSetAtomic (volatile uint_fast16_t *ptr, uint_fast16_t value)
 {
+    uint32_t primask = __get_PRIMASK();
+
     __disable_irq();
     uint_fast16_t prev = *ptr;
     *ptr = value;
-    __enable_irq();
+    __set_PRIMASK(primask);
 
     return prev;
 }
@@ -2832,8 +2874,8 @@ bool driver_init (void)
     hal.control.get_state = systemGetState;
 
     hal.reboot = __NVIC_SystemReset;
-    hal.irq_enable = __enable_irq;
-    hal.irq_disable = __disable_irq;
+    hal.irq_enable = irqEnable;
+    hal.irq_disable = irqDisable;
 #if I2C_STROBE_ENABLE || SPI_IRQ_BIT
     hal.irq_claim = irq_claim;
 #endif
