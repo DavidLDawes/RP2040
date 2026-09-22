@@ -2517,7 +2517,18 @@ void setPeriphPinDescription (const pin_function_t function, const pin_group_t g
 
 static void _write (void)
 {
-    while(neop.busy);
+    // Unlike i2c_send()'s equivalent wait, this had no escape at all: if the DMA completion
+    // alarm (neop_transfer_complete(), scheduled from neop_dma_complete()) never landed, the
+    // controller wedged permanently and could not even be soft-reset - a plain busy-wait
+    // never returns to the foreground loop that would act on the reset request.
+    // hal.stream_blocking_callback() - the same escape i2c_send() uses - actively pumps that
+    // foreground/task execution loop while waiting and returns false once EXEC_RESET is set,
+    // so a reset or abort can break out here; the LED update is simply skipped rather than
+    // the whole controller wedging.
+    while(neop.busy) {
+        if(!hal.stream_blocking_callback())
+            return;
+    }
 
     dma_channel_set_read_addr(neop.dma_ch, (void*)neopixel.leds, true);
 }
@@ -3321,7 +3332,10 @@ void __not_in_flash_func(gpio_int_handler)(uint pin, uint32_t events)
                 break;
 
 #if SPINDLE_ENCODER_ENABLE
-            case PinGroup_SpindleIndex:
+            case PinGroup_SpindleIndex: {
+                // Braced: a case label must be followed by a statement, not a declaration,
+                // before C23 - GCC accepts it unbraced, but it is gratuitously non-portable
+                // in a codebase that targets 15+ toolchains.
                 uint32_t rpm_count = encoder_ovf | pwm_get_counter(encoder_pwm);
                 spindle_encoder.timer.last_index = (uint32_t)(get_absolute_time() - encoder_started);
 
@@ -3331,6 +3345,7 @@ void __not_in_flash_func(gpio_int_handler)(uint pin, uint32_t events)
                 spindle_encoder.counter.last_index = rpm_count;
                 spindle_encoder.counter.index_count++;
                 break;
+            }
 #endif
             default:
                 break;

@@ -33,6 +33,16 @@
 #define MAX_PAGE_SIZE 64
 #define I2C_MAX_TSIZE 256
 
+// I2C bus is run at 100 kHz (see i2c_start()), where a single byte transfer including
+// address, ACK and any clock stretching normally completes in well under 1 ms. 50 ms is a
+// large multiple of that - generous enough to never trip in normal operation, short enough
+// that a genuinely stuck bus (SDA held low, a device holding clock stretching forever, or no
+// device present on a probe) recovers the controller in a fraction of a second rather than
+// hanging it - see i2c_probe(), i2c_receive(), i2c_send(), i2c_get_keycode(), i2c_transfer().
+#ifndef I2C_TIMEOUT_US
+#define I2C_TIMEOUT_US 50000
+#endif
+
 #define I2CN_PORT(port) I2Cn(port)
 #define I2Cn(port) i2c##port
 #define I2CN_IRQ(port) I2Cirq(port)
@@ -140,16 +150,18 @@ bool i2c_probe (uint_fast16_t i2cAddr)
 {
     char buf = '\0';
 
-    return i2c_read_blocking(QI2C_PORT, i2cAddr, &buf, 1, false) != PICO_ERROR_GENERIC;
+    // i2c_read_timeout_us() returns PICO_ERROR_GENERIC (-1) if the address is not ACKed - the
+    // expected, common case when probing - or PICO_ERROR_TIMEOUT (-2) if the bus itself is
+    // stuck. The original `!= PICO_ERROR_GENERIC` check treated -2 as success; comparing
+    // against the requested byte count is correct for both cases and for a genuine success.
+    return i2c_read_timeout_us(QI2C_PORT, i2cAddr, (uint8_t *)&buf, 1, false, I2C_TIMEOUT_US) == 1;
 }
 
-// TODO: add timeout handling
 bool i2c_receive (uint_fast16_t i2cAddr, uint8_t *buf, size_t size, bool block)
 {
-    return i2c_read_blocking(QI2C_PORT, i2cAddr, buf, size, false) != PICO_ERROR_GENERIC;
+    return i2c_read_timeout_us(QI2C_PORT, i2cAddr, buf, size, false, I2C_TIMEOUT_US) == (int)size;
 }
 
-// TODO: add timeout handling
 bool i2c_send (uint_fast16_t i2cAddr, uint8_t *buf, size_t bytes, bool block)
 {
     bool ok;
@@ -161,7 +173,7 @@ bool i2c_send (uint_fast16_t i2cAddr, uint8_t *buf, size_t bytes, bool block)
                 return false;
         }
 
-        ok = i2c_write_blocking(QI2C_PORT, i2cAddr, buf, bytes, false) == bytes;
+        ok = i2c_write_timeout_us(QI2C_PORT, i2cAddr, buf, bytes, false, I2C_TIMEOUT_US) == (int)bytes;
 
     } else {
 
@@ -205,7 +217,7 @@ bool i2c_get_keycode (uint_fast16_t i2cAddr, keycode_callback_ptr callback)
 
     dma_channel_wait_for_finish_blocking(tx.channel);
 
-    if(i2c_read_blocking(QI2C_PORT, i2cAddr, &c, 1, false) == 1)
+    if(i2c_read_timeout_us(QI2C_PORT, i2cAddr, &c, 1, false, I2C_TIMEOUT_US) == 1)
         keypad_callback(c);
 
     return true;
@@ -224,14 +236,24 @@ bool i2c_transfer (i2c_transfer_t *i2c, bool read)
         txbuf[0] = i2c->word_addr;
 
     if(read) {
-        i2c_write_blocking(QI2C_PORT, i2c->address, txbuf, i2c->word_addr_bytes, true);
-        ok = i2c_read_blocking(QI2C_PORT, i2c->address, i2c->data, i2c->count, false) != PICO_ERROR_GENERIC;
+        // The two calls form one logical transaction (write the word address, restart, then
+        // read); a timed-out or NACKed address write leaves the bus in an undefined state for
+        // the read that follows, so bail out rather than attempting it. Both legs previously
+        // used the unbounded pico-sdk call, and the write's result was not checked at all.
+        if(i2c_write_timeout_us(QI2C_PORT, i2c->address, txbuf, i2c->word_addr_bytes, true, I2C_TIMEOUT_US) == (int)i2c->word_addr_bytes)
+            ok = i2c_read_timeout_us(QI2C_PORT, i2c->address, i2c->data, i2c->count, false, I2C_TIMEOUT_US) == (int)i2c->count;
+        else
+            ok = false;
     } else if((ok = i2c->count + i2c->word_addr_bytes) <= sizeof(txbuf)) {
         memcpy(&txbuf[i2c->word_addr_bytes], i2c->data, i2c->count);
         if(i2c->no_block)
-            ok = i2c_send(i2c->address, txbuf, i2c->count + i2c->word_addr_bytes, false) != PICO_ERROR_GENERIC;
+            // i2c_send() already returns bool - comparing it against PICO_ERROR_GENERIC (an int
+            // error code from the pico-sdk calls, not what this function returns) was always
+            // true regardless of the actual result, since neither 0 nor 1 ever equals -1. This
+            // silently swallowed every non-blocking send failure in this path.
+            ok = i2c_send(i2c->address, txbuf, i2c->count + i2c->word_addr_bytes, false);
         else
-            ok = i2c_write_blocking(QI2C_PORT, i2c->address, txbuf, i2c->count + i2c->word_addr_bytes, false) != PICO_ERROR_GENERIC;
+            ok = i2c_write_timeout_us(QI2C_PORT, i2c->address, txbuf, i2c->count + i2c->word_addr_bytes, false, I2C_TIMEOUT_US) == (int)(i2c->count + i2c->word_addr_bytes);
     }
 
     return ok;

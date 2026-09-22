@@ -72,15 +72,29 @@ static bool init_pwm (xbar_t *output, pwm_config_t *config, bool persistent)
 
 static float pwm_get_value (xbar_t *output)
 {
-    return pwm_values && output->id < analog.out.n_ports ? pwm_values[output->id] : -1.0f;
+    // pwm_values[] holds one slot per PWM-capable analog output, in the compacted order
+    // assigned to pwm_idx - not one slot per analog output port. Guard on mode.pwm/servo_pwm
+    // as well as the bounds check: a non-PWM analog output has an unset (zero) pwm_idx, which
+    // would otherwise silently alias slot 0.
+    return pwm_values && output->id < analog.out.n_ports &&
+            (aux_out_analog[output->id].mode.pwm || aux_out_analog[output->id].mode.servo_pwm)
+             ? pwm_values[aux_out_analog[output->id].pwm_idx] : -1.0f;
 }
 
 static bool analog_out (uint8_t port, float value)
 {
     if(port < analog.out.n_ports) {
-        if(pwm_values)
-            pwm_values[aux_out_analog[port].id - Output_Analog_Aux0] = value;
-        pwm_set_gpio_level(aux_out_analog[port].pin, ioports_compute_pwm_value(&pwm_data[aux_out_analog[port].pwm_idx], value));
+        // Only PWM-capable outputs have a slot in pwm_data[]/pwm_values[] - both are sized by
+        // the count of such outputs (n_pwm), not by port count, and indexed via pwm_idx. Without
+        // this guard a board with a non-PWM analog output would write pwm_values[] out of bounds
+        // (pwm_idx defaults to 0, port ordinal can exceed n_pwm - 1) and dereference pwm_data
+        // through an index into memory calloc() never sized for it.
+        if(aux_out_analog[port].mode.pwm || aux_out_analog[port].mode.servo_pwm) {
+            if(pwm_values)
+                pwm_values[aux_out_analog[port].pwm_idx] = value;
+            if(pwm_data)
+                pwm_set_gpio_level(aux_out_analog[port].pin, ioports_compute_pwm_value(&pwm_data[aux_out_analog[port].pwm_idx], value));
+        }
     }
 
     return port < analog.out.n_ports;
