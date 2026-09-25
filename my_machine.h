@@ -67,6 +67,8 @@
 //#define WEBUI_AUTH_ENABLE       1 // Enable ESP3D-WEBUI authentication.
 //#define WEBUI_INFLASH           0 // Uncomment to store WebUI files on SD card instead of in flash (littlefs).
 //#define SDCARD_ENABLE           2 // Run gcode programs from SD card. Set to 2 to enable YModem upload.
+#define LITTLEFS_ENABLE         2 // Run gcode programs from a littlefs file system in onboard flash, mounted as root. Adds $F commands and YModem upload.
+                                    // Set to 1 to mount it as /littlefs instead (macros only, no $F commands). Ignored if SDCARD_ENABLE is set.
 //#define MPG_ENABLE              2 // Enable MPG interface. Requires a serial stream and means to switch between normal and MPG mode.
                                     // 1: Mode switching is by handshake pin.
                                     // 2: Mode switching is by the CMD_MPG_MODE_TOGGLE (0x8B) command character.
