@@ -182,6 +182,8 @@
   #include "boards/btt_skr_pico_10_map.h"
 #elif defined BOARD_CITOH_CX6000
   #include "boards/citoh_cx6000_map.h"
+#elif defined(BOARD_MHS_CNC)
+  #include "boards/mhs_cnc_map.h"
 #elif defined(BOARD_MY_MACHINE)
   #include "boards/my_machine_map.h"
 #elif defined(BOARD_GENERIC_4AXIS)
