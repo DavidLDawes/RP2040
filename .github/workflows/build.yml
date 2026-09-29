@@ -34,24 +34,42 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # axes: the N_AXIS the image must end up with (checked below). The
+          # generic 4/8-axis maps do not raise N_AXIS themselves - without N_AXIS
+          # these two entries used to build 3-axis images.
           - name: pico2-generic-3axis
             pico_board: pico2
             defines: ""
+            axes: 3
           - name: pico-generic-3axis
             pico_board: pico
             defines: ""
+            axes: 3
           - name: pico2-generic-4axis
             pico_board: pico2
-            defines: "BOARD_GENERIC_4AXIS"
+            defines: "BOARD_GENERIC_4AXIS N_AXIS=4"
+            axes: 4
           - name: pico2-generic-8axis
             pico_board: pico2
-            defines: "BOARD_GENERIC_8AXIS"
+            defines: "BOARD_GENERIC_8AXIS N_AXIS=8"
+            axes: 8
           - name: pico2-compat-level-1
             pico_board: pico2
             defines: "COMPATIBILITY_LEVEL=1"
+            axes: 3
           - name: pico2-compat-level-2
             pico_board: pico2
             defines: "COMPATIBILITY_LEVEL=2"
+            axes: 3
+          # the role files scripts/build.ps1 uses (roles/<role>.cmake)
+          - name: pico-role-cnc
+            pico_board: pico
+            role: cnc
+            axes: 8
+          - name: pico2-role-cnc
+            pico_board: pico2
+            role: cnc
+            axes: 8
 
     steps:
       - name: Check out driver
@@ -126,7 +144,9 @@ jobs:
         env:
           PICO_SDK_PATH: /home/runner/pico-sdk
         run: |
-          if [ -n "${{ matrix.defines }}" ]; then
+          if [ -n "${{ matrix.role }}" ]; then
+            cp "driver/roles/${{ matrix.role }}.cmake" inject.cmake
+          elif [ -n "${{ matrix.defines }}" ]; then
             echo 'add_compile_definitions(${{ matrix.defines }})' > inject.cmake
           else
             echo '# no extra defines' > inject.cmake
@@ -169,7 +189,7 @@ jobs:
       # Settings (NVS) must sit in the last 32K of flash, and the image must end below
       # the littlefs area just under it. Both depend on the board's flash size, which
       # flash.c once ignored (fixed at 2016K, the last 32K of 2 MB only).
-      - name: Check flash layout
+      - name: Check flash layout and axis count
         run: |
           elf=build/grblHAL.elf
           case "${{ matrix.pico_board }}" in
@@ -192,6 +212,13 @@ jobs:
           if [ $end -gt $fs_start ]; then
             echo "::error::image ends at $(printf 0x%x $end), past the littlefs area at $(printf 0x%x $fs_start)"; exit 1
           fi
+          # core's axis_letter[N_AXIS] holds one 4-byte pointer per axis
+          size=$(arm-none-eabi-nm -S "$elf" | awk '$4 == "axis_letter" {print $2}')
+          axes=$(( 0x$size / 4 ))
+          if [ "$axes" -ne "${{ matrix.axes }}" ]; then
+            echo "::error::image has $axes axes, expected ${{ matrix.axes }}"; exit 1
+          fi
+          echo "axes OK: $axes"
           echo "layout OK: image ends $(printf 0x%x $end), littlefs from $(printf 0x%x $fs_start), settings at $(printf 0x%x $nvs_expected) (${flash_kb}K flash)"
 
       - name: Upload firmware
