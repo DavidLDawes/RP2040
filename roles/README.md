@@ -42,17 +42,22 @@ A B C available. It uses every GPIO the Pico and Pico 2 expose (0-22, 26-28):
 | 10-17 | direction X Y Z A B C U V |
 | 18, 19, 20, 21, 22 | limit/home X, Y, Z, U, V |
 | 26 | E-stop (reset/halt input; `ESTOP_ENABLE` is on) |
-| 27 | cycle start |
+| 27 | stepper enable, shared by all drivers (`$4` polarity) |
 | 28 | probe (the same pin as the default map) |
 | 0 | spindle on/off |
 | 1 | coolant flood |
 
-- **No stepper enable output** (there's no pin left), so drivers must be enabled in
-  hardware. There are also no limit inputs for A, B and C, no feed hold, no safety door
-  and no mist coolant. The spindle is on/off only: no PWM speed and no direction.
+- **Stepper enable (27)** lets grblHAL switch the drivers off on an alarm (including the
+  E-stop input), after moves (`$1` idle delay; `$1=255` keeps them always on, e.g. for a Z
+  that would drop), per axis (`$37`), and in sleep mode. It doesn't replace a physical
+  E-stop that cuts driver power.
+- **No cycle start input.** It gave way to stepper enable; cycle start can still be sent
+  over the stream (mhs2core `send_realtime_command("cycle_start")`). There are also no
+  limit inputs for A, B and C, no feed hold, no safety door and no mist coolant. The
+  spindle is on/off only: no PWM speed and no direction.
 - The role file sets the options core defaults *before* the board map is read
   (`N_AXIS=8`, `SPINDLE0_ENABLE=SPINDLE_ONOFF0`, `COOLANT_ENABLE=COOLANT_FLOOD`,
-  `CONTROL_ENABLE=(CONTROL_HALT|CONTROL_CYCLE_START)`). The map `#error`s if they don't
+  `CONTROL_ENABLE=CONTROL_HALT`). The map `#error`s if they don't
   match its pins.
 - **Different pins from `default`**: a board wired for `default` must be rewired before
   it's flashed with `cnc`.

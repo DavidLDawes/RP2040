@@ -23,20 +23,21 @@
 //   GPIO 10-17  direction X Y Z A B C U V
 //   GPIO 18-22  limit / home inputs X Y Z U V
 //   GPIO 26     E-stop (reset/halt input)
-//   GPIO 27     cycle start
+//   GPIO 27     stepper enable (all drivers)
 //   GPIO 28     probe
 //   GPIO 0      spindle on/off
 //   GPIO 1      coolant flood
 //
-// No stepper enable output (no pin left): drivers must be enabled in hardware.
-// No limit inputs for A, B and C, no feed hold / safety door / mist coolant.
+// One enable output shared by all drivers ($4 sets its polarity, $1/$37 when it releases).
+// No limit inputs for A, B and C, no cycle start / feed hold / safety door / mist coolant
+// inputs or outputs (cycle start can be sent over the stream, e.g. by mhs2core).
 // GPIO 0/1 are the default UART0 pins (Debug Probe console); grblHAL uses USB CDC.
 // Designed for 5-axis machines (X Y Z U V) with A B C available; not yet built as
 // real hardware, see Controller/PICO2-PLAN.md 2.1.
 //
 // The role file (roles/cnc.cmake) sets the options core defaults before this file
 // is read: N_AXIS=8, SPINDLE0_ENABLE=SPINDLE_ONOFF0, COOLANT_ENABLE=COOLANT_FLOOD and
-// CONTROL_ENABLE=(CONTROL_HALT|CONTROL_CYCLE_START). The #errors below catch a mismatch.
+// CONTROL_ENABLE=CONTROL_HALT. The #errors below catch a mismatch.
 
 #define BOARD_NAME "MHS CNC 8-axis"
 
@@ -56,8 +57,8 @@
 #error "mhs_cnc_map.h has no mist coolant output: set COOLANT_ENABLE=COOLANT_FLOOD"
 #endif
 
-#if CONTROL_ENABLE & ~(CONTROL_HALT|CONTROL_CYCLE_START)
-#error "mhs_cnc_map.h has E-stop and cycle start inputs only: set CONTROL_ENABLE=(CONTROL_HALT|CONTROL_CYCLE_START)"
+#if CONTROL_ENABLE & ~CONTROL_HALT
+#error "mhs_cnc_map.h has an E-stop input only: set CONTROL_ENABLE=CONTROL_HALT"
 #endif
 
 // Define step pulse output pins.
@@ -70,6 +71,10 @@
 #define Y_DIRECTION_PIN         11
 #define Z_DIRECTION_PIN         12
 #define DIRECTION_OUTMODE       GPIO_SHIFT10
+
+// Define stepper driver enable/disable output pin.
+#define ENABLE_PORT             GPIO_OUTPUT
+#define STEPPERS_ENABLE_PIN     27
 
 // Define homing/hard limit switch input pins.
 #define X_LIMIT_PIN             18
@@ -128,17 +133,12 @@
 
 // Auxiliary inputs
 #define AUXINPUT0_PIN           26 // Reset/EStop
-#define AUXINPUT1_PIN           27 // Cycle start
-#define AUXINPUT2_PIN           28 // Probe
+#define AUXINPUT1_PIN           28 // Probe
 
-// Define user-control controls (cycle start, reset) input pins.
+// Define user-control controls (reset/E-stop) input pins.
 #if CONTROL_ENABLE & CONTROL_HALT
 #define RESET_PIN               AUXINPUT0_PIN
 #endif
-#if CONTROL_ENABLE & CONTROL_CYCLE_START
-#define CYCLE_START_PIN         AUXINPUT1_PIN
-#endif
-
 #if PROBE_ENABLE
-#define PROBE_PIN               AUXINPUT2_PIN
+#define PROBE_PIN               AUXINPUT1_PIN
 #endif
