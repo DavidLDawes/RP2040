@@ -1,20 +1,22 @@
-# Role "cnc": 8-axis CNC control (X Y Z A B C U V).
+# Role "cnc": 8-axis CNC control (X Y Z A B C U V), meant mostly for 5-axis
+# machines (X Y Z U V), with A B C available.
 #
-# Uses boards/generic_map_8axis.h. N_AXIS must be set as well: the map enables up to
-# 8 axes but does not raise N_AXIS itself, so BOARD_GENERIC_8AXIS alone still builds
-# 3 axes.
+# Pin map: boards/mhs_cnc_map.h (see there and roles/README.md for the pinout).
+# It uses every GPIO: step 2-9, direction 10-17, limits X Y Z U V 18-22, E-stop 26,
+# cycle start 27, probe 28, spindle on/off 0, coolant flood 1. No stepper enable output.
 #
-# CAUTION - read before flashing a board that is wired to a machine:
-# * The map's own header says it "is an example for how to enable up to 8 axes, it is
-#   not intended for use in a machine".
-# * Its pins differ from the default (3-axis) map: step 2-9 (X..V), direction 10-17,
-#   stepper enable 18, limit inputs 19-22 (X, Y, Z, A only), spindle PWM/dir/enable
-#   26/27/28. A board wired for roles/default.cmake must be rewired first.
-# * No probe (PROBE_ENABLE 0), no control inputs such as reset/feed hold/cycle start
-#   (CONTROL_ENABLE 0), and no limit inputs for B, C, U, V.
-# * Some pins are assigned twice: 21 (Z limit, aux input 1), 22 (A limit, aux input 3 /
-#   probe), 28 (spindle enable output, aux input 2), and the spindle enable pin is the
-#   same pin as spindle PWM.
-# See Controller/PICO2-PLAN.md 2.1 for the plan to replace it with a map of our own.
+# These options must come from here, not the map: core sets their defaults before
+# the board map is read.
+#   N_AXIS=8                          the map does not raise N_AXIS itself
+#   SPINDLE0_ENABLE=SPINDLE_ONOFF0    one on/off spindle output (no PWM, no direction)
+#   COOLANT_ENABLE=COOLANT_FLOOD      flood only (no mist output)
+#   CONTROL_ENABLE=...                E-stop (reset/halt) and cycle start inputs, no
+#                                     feed hold (driver.h defaults to all three)
 
-add_compile_definitions(BOARD_GENERIC_8AXIS N_AXIS=8)
+add_compile_definitions(
+    BOARD_MHS_CNC
+    N_AXIS=8
+    SPINDLE0_ENABLE=SPINDLE_ONOFF0
+    COOLANT_ENABLE=COOLANT_FLOOD
+    "CONTROL_ENABLE=(CONTROL_HALT|CONTROL_CYCLE_START)"
+)
