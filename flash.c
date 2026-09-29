@@ -36,7 +36,11 @@
 
 #include "driver.h"
 
-#define FLASH_TARGET_OFFSET (2016 * 1024) // Last 32K
+// Last 32K of flash, whatever its size - littlefs_hal.c places the file system just below it.
+// Note: before this was relative to the flash size it was fixed at 2016K, which is the
+// same place on 2 MB boards only. On larger flash (e.g. 4 MB on the Pico 2) settings move,
+// backup and restore!
+#define FLASH_TARGET_OFFSET (PICO_FLASH_SIZE_BYTES - 32 * 1024)
 
 static const uint8_t *flash_target = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);    // Last page start adress
 

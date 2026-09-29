@@ -166,6 +166,34 @@ jobs:
           echo "--- firmware size ---"
           arm-none-eabi-size "$elf"
 
+      # Settings (NVS) must sit in the last 32K of flash, and the image must end below
+      # the littlefs area just under it. Both depend on the board's flash size, which
+      # flash.c once ignored (fixed at 2016K, the last 32K of 2 MB only).
+      - name: Check flash layout
+        run: |
+          elf=build/grblHAL.elf
+          case "${{ matrix.pico_board }}" in
+            pico|pico_w)   flash_kb=2048 ;;
+            pico2|pico2_w) flash_kb=4096 ;;
+            *) echo "::error::no flash size known for ${{ matrix.pico_board }}"; exit 1 ;;
+          esac
+          xip=$((0x10000000))
+          nvs_expected=$((xip + (flash_kb - 32) * 1024))
+          fs_start=$((xip + (flash_kb - 32 - 512) * 1024))
+
+          # memcpy_to_flash() loads the settings address from a literal: XIP_BASE + offset
+          nvs=$(arm-none-eabi-objdump -d --disassemble=memcpy_to_flash "$elf" \
+                | grep -oiE '0x10[0-9a-f]{6}' | sort -u)
+          if [ "$(echo "$nvs" | wc -l)" -ne 1 ] || [ $((nvs)) -ne $nvs_expected ]; then
+            echo "::error::settings at '${nvs}', expected $(printf 0x%x $nvs_expected) (last 32K of ${flash_kb}K)"; exit 1
+          fi
+
+          end=$((0x$(arm-none-eabi-nm "$elf" | awk '$3 == "__flash_binary_end" {print $1}')))
+          if [ $end -gt $fs_start ]; then
+            echo "::error::image ends at $(printf 0x%x $end), past the littlefs area at $(printf 0x%x $fs_start)"; exit 1
+          fi
+          echo "layout OK: image ends $(printf 0x%x $end), littlefs from $(printf 0x%x $fs_start), settings at $(printf 0x%x $nvs_expected) (${flash_kb}K flash)"
+
       - name: Upload firmware
         uses: actions/upload-artifact@v7
         with:

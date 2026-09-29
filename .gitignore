@@ -33,3 +33,6 @@ build
 
 .vscode/settings.json
 .vscode/c_cpp_properties.json
+
+# per-board build directories (build-pico, build-pico2, ...)
+build-*/
