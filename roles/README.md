@@ -61,8 +61,11 @@ A B C available. It uses every GPIO the Pico and Pico 2 expose (0-22, 26-28):
   match its pins.
 - **Different pins from `default`**: a board wired for `default` must be rewired before
   it's flashed with `cnc`.
-- GPIO 0/1 are UART0's default pins (where a Debug Probe's console usually connects).
-  grblHAL uses USB, so they're free for the two outputs.
+- GPIO 0/1 are also the driver's UART pins (where a Debug Probe's console usually
+  connects). grblHAL talks over USB, so the UART is registered on them but never started,
+  and `$PINS` lists both uses. Anything that would start the UART (an MPG pendant,
+  Modbus, a UART keypad) would take the pins from spindle and coolant, so the map
+  refuses those builds. Upstream's `pico_cnc` map uses GPIO 0/1 the same way.
 - A real 8-axis machine would need more I/O than this, for example a multiplexer on
   these pins giving 4 banks of 8. That's out of scope for now.
 

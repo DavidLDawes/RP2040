@@ -31,7 +31,8 @@
 // One enable output shared by all drivers ($4 sets its polarity, $1/$37 when it releases).
 // No limit inputs for A, B and C, no cycle start / feed hold / safety door / mist coolant
 // inputs or outputs (cycle start can be sent over the stream, e.g. by mhs2core).
-// GPIO 0/1 are the default UART0 pins (Debug Probe console); grblHAL uses USB CDC.
+// GPIO 0/1 are the default UART0 pins (Debug Probe console). grblHAL talks over USB, and
+// the UART is only registered on them (listed in $PINS), never started - see the #error below.
 // Designed for 5-axis machines (X Y Z U V) with A B C available; not yet built as
 // real hardware, see Controller/PICO2-PLAN.md 2.1.
 //
@@ -55,6 +56,12 @@
 
 #if COOLANT_ENABLE & COOLANT_MIST
 #error "mhs_cnc_map.h has no mist coolant output: set COOLANT_ENABLE=COOLANT_FLOOD"
+#endif
+
+// GPIO 0/1 are also registered as the driver's UART (serial.c default pins). The UART
+// only takes them over when a feature claims that stream, so refuse the ones that would.
+#if MPG_ENABLE || MODBUS_ENABLE || KEYPAD_ENABLE == 2
+#error "mhs_cnc_map.h uses GPIO 0/1 (the UART pins) for spindle and coolant: MPG, Modbus and the UART keypad are not available"
 #endif
 
 #if CONTROL_ENABLE & ~CONTROL_HALT
